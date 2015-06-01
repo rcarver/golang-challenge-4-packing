@@ -6,7 +6,10 @@ import (
 	"sync"
 )
 
-var debug = false
+const (
+	debug      = false
+	debugInput = false
+)
 
 // A repacker repacks trucks.
 type repacker struct {
@@ -41,13 +44,23 @@ func (buf *packingBuffer) addBox(b box) {
 	go func() { buf.boxesCh <- &b }()
 }
 
+var boxCount = 0
+
 func accumulate(buf *packingBuffer, t *truck) {
-	//log.Printf("Input truck %d with %d pallets\n", t.id, len(t.pallets))
-	for _, p := range t.pallets {
-		//log.Printf("Input truck %d, pallet %d/%d", t.id, pi+1, len(t.pallets))
+	if debugInput {
+		log.Printf("Input truck %d with %d pallets\n", t.id, len(t.pallets))
+	}
+	for pi, p := range t.pallets {
+		if debugInput {
+			log.Printf("Input truck %d, pallet %d/%d", t.id, pi+1, len(t.pallets))
+		}
 		//log.Printf("%s\n", p)
 		for _, b := range p.boxes {
 			//log.Printf("Input box %d, %d/%d\n", b.id, bi+1, len(p.boxes))
+			boxCount++
+			if debugInput {
+				fmt.Printf("%d boxes\n", boxCount)
+			}
 			buf.addBox(b)
 		}
 	}
@@ -70,33 +83,73 @@ func pack(buf *packingBuffer, out chan<- *truck) {
 				}
 			}
 			out <- t
+			//return
 		}
 	}
 }
 
 func packTruck(buf *packingBuffer, t *truck) {
-	for {
+	fmt.Printf("Packing truck %d needs %d pallets\n", t.id, cap(t.pallets))
+	for len(t.pallets) < cap(t.pallets) {
 		p := &pallet{boxes: make([]box, 0, 16)}
-		fmt.Printf("Packing truck %d\n", t.id)
 		packPallet(buf, p)
-		fmt.Printf("-> %d boxes in pallet\n", len(p.boxes))
-		fmt.Printf("%s\n", p)
-		t.pallets = append(t.pallets, *p)
-
-		if len(t.pallets) == cap(t.pallets) {
-			if debug {
-				log.Printf("Truck %d has all pallets", t.id)
-			}
+		if len(p.boxes) == 0 {
 			return
 		}
+		t.pallets = append(t.pallets, *p)
+		fmt.Printf("-> %d boxes in pallet %d\n", len(p.boxes), len(t.pallets))
+		fmt.Printf("%s\n", p)
 	}
 }
 
-var maxFails = 20
+var (
+	maxFails    = 20
+	boxesToPull = 32
+)
 
 func packPallet(buf *packingBuffer, p *pallet) {
+	fmt.Printf("Packing pallet...\n")
+
+	boxes := make([]*box, 0, boxesToPull)
+	usedBoxes := make(map[uint32]bool)
+
+	// Grab some boxes.
+	for len(boxes) < cap(boxes) {
+		select {
+		case b := <-buf.boxesCh:
+			fmt.Printf("Picked box %d, now have %d\n", b.id, len(boxes))
+			usedBoxes[b.id] = false
+			boxes = append(boxes, b)
+		}
+	}
+
+	fmt.Printf("Got %d boxes\n", len(boxes))
+
+	// Put back unused boxes.
+	defer func() {
+		for _, b := range boxes {
+			if !usedBoxes[b.id] {
+				buf.addBox(*b)
+			}
+		}
+	}()
+
+	var firstUnused = func() *box {
+		for _, b := range boxes {
+			if !usedBoxes[b.id] {
+				return b
+			}
+		}
+		return nil
+	}
+
+	// Try to fill the pallet.
 	fails := 0
-	for b := range buf.boxesCh {
+	for {
+		b := firstUnused()
+		if b == nil {
+			return
+		}
 		ok := false
 
 		if len(p.boxes) == 0 {
@@ -113,11 +166,13 @@ func packPallet(buf *packingBuffer, p *pallet) {
 		}
 
 		if ok {
+			fmt.Printf("Using box %d\n", b.id)
+			usedBoxes[b.id] = true
 			p.boxes = append(p.boxes, *b)
 		} else {
-			go func(bb box) { buf.addBox(bb) }(*b)
 			fails++
 			if fails > maxFails {
+				fmt.Printf("calling it quits\n")
 				return
 			}
 		}
