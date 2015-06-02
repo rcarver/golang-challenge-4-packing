@@ -15,23 +15,32 @@ type counter struct {
 	In, Out int
 }
 
+// newCounter initializes a counter with a name.
 func newCounter(name string) *counter {
 	return &counter{Name: name}
 }
 
+// Inc adds one to the "in" count.
 func (c *counter) Inc() {
 	c.In++
 }
+
+// Dec adds one to the "out" count.
 func (c *counter) Dec() {
 	c.Out++
 }
+
+// Missing is the difference between in and out.
 func (c *counter) Missing() int {
 	return c.In - c.Out
 }
+
+// String is a nice string describing the counter state.
 func (c *counter) String() string {
 	return fmt.Sprintf("%s: %d in, %d out (missing %d)", c.Name, c.In, c.Out, c.Missing())
 }
 
+// warehouse manages the ins and outs of unpacking and packing.
 type warehouse struct {
 	trucks        chan truck
 	boxes         chan box
@@ -40,33 +49,54 @@ type warehouse struct {
 	boxCounter    *counter
 }
 
-func collect(t *truck, w *warehouse) {
-	w.trucks <- *t
-	w.truckCounter.Inc()
-	for _, p := range t.pallets {
-		w.palletCounter.Inc()
-		for _, b := range p.boxes {
-			w.boxCounter.Inc()
-			w.boxes <- b
+// Unpack unloads all boxes from the trucks, and parks all of the trucks to be
+// re-packed.
+func (w *warehouse) Unpack(in <-chan *truck) {
+	defer close(w.trucks)
+	//defer close(w.boxes)
+	for t := range in {
+		emptyTruck := &truck{
+			id:      t.id,
+			pallets: make([]pallet, 0, len(t.pallets)),
+		}
+		w.trucks <- *emptyTruck
+		w.truckCounter.Inc()
+		for _, p := range t.pallets {
+			w.palletCounter.Inc()
+			for _, b := range p.boxes {
+				w.boxCounter.Inc()
+				w.boxes <- b
+			}
 		}
 	}
 }
 
-func packTruck(t *truck, w *warehouse) *truck {
-	out := &truck{
-		id:      t.id,
-		pallets: make([]pallet, 0, len(t.pallets)),
-	}
-	for len(out.pallets) < cap(out.pallets) {
+// PackTruck re-packs a truck as efficiently as possible.
+func (w *warehouse) PackTruck(t *truck) {
+	w.truckCounter.Dec()
+	for len(t.pallets) < cap(t.pallets) {
 		p := &pallet{
 			boxes: make([]box, 0, 16),
 		}
 		packPallet(p, w)
 		w.palletCounter.Dec()
-		out.pallets = append(out.pallets, *p)
+		t.pallets = append(t.pallets, *p)
 	}
+}
+
+// PackRemainingBoxes puts all boxes onto this last truck, with no regard for
+// efficiency.
+func (w *warehouse) PackRemainingBoxes(t *truck) {
+	close(w.boxes)
 	w.truckCounter.Dec()
-	return out
+	for b := range w.boxes {
+		p := &pallet{
+			boxes: []box{b},
+		}
+		w.boxCounter.Dec()
+		w.palletCounter.Dec()
+		t.pallets = append(t.pallets, *p)
+	}
 }
 
 func chooseBox(boxes []*box, usedBoxes map[uint32]bool) *box {
@@ -94,10 +124,11 @@ func packPallet(p *pallet, w *warehouse) {
 			boxes = append(boxes, &b)
 		}
 	}
+
 	defer func() {
 		for _, b := range boxes {
 			if !usedBoxes[b.id] {
-				go func(bb box) { w.boxes <- bb }(*b)
+				w.boxes <- *b
 			}
 		}
 	}()
@@ -144,11 +175,7 @@ func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 		palletCounter: newCounter("Pallets"),
 		boxCounter:    newCounter("Boxes"),
 	}
-	go func() {
-		for t := range in {
-			collect(t, w)
-		}
-	}()
+	go w.Unpack(in)
 	go func() {
 		// The repacker must close channel out after it detects that
 		// channel in is closed so that the driver program will finish
@@ -164,14 +191,13 @@ func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 		for {
 			select {
 			case t := <-w.trucks:
-				newTruck := packTruck(&t, w)
-				out <- newTruck
-				// The last truck is indicated by its id. You might
-				// need to do something special here to make sure you
-				// send all the boxes.
 				if t.id == idLastTruck {
+					w.PackRemainingBoxes(&t)
+					out <- &t
 					return
 				}
+				w.PackTruck(&t)
+				out <- &t
 			}
 		}
 	}()
