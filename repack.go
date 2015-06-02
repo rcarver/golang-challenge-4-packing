@@ -52,8 +52,9 @@ type warehouse struct {
 // Unpack unloads all boxes from the trucks, and parks all of the trucks to be
 // re-packed.
 func (w *warehouse) Unpack(in <-chan *truck) {
+	// Close trucks after consuming everything.
+	// Do not close boxes because we need to use it as a buffer later.
 	defer close(w.trucks)
-	//defer close(w.boxes)
 	for t := range in {
 		emptyTruck := &truck{
 			id:      t.id,
@@ -82,8 +83,8 @@ func (w *warehouse) PackTruck(t *truck) {
 	}
 }
 
-// PackRemainingBoxes puts all boxes onto this last truck, with no regard for
-// efficiency.
+// PackRemainingBoxes puts all remaining boxes onto this last truck, with no
+// regard for how many pallets should fit.
 func (w *warehouse) PackRemainingBoxes(t *truck) {
 	close(w.boxes)
 	w.truckCounter.Dec(1)
@@ -95,39 +96,40 @@ func (w *warehouse) PackRemainingBoxes(t *truck) {
 	}
 }
 
+// packOnePallet pulls boxes from the channel, packs as many as it can onto one
+// pallet, then returns any unpacked boxes back to the channel. It returns the
+// packed pallet.
 func packOnePallet(boxes chan box) *pallet {
-	var boxCap int
-	if maxBoxes > len(boxes) {
-		boxCap = len(boxes)
+	// Take up to the number of boxes in the channel.
+	boxCap, bLen := 0, len(boxes)
+	if maxBoxes > bLen {
+		boxCap = bLen
 	} else {
 		boxCap = maxBoxes
 	}
-	packer := &palletPacker{
-		boxes:     make([]*box, 0, boxCap),
-		usedBoxes: make(map[uint32]bool),
-	}
-	packer.takeBoxes(boxes)
-	defer packer.putBackUnusedBoxes(boxes)
-	p := &pallet{
-		boxes: make([]box, 0, 16),
-	}
-	packer.pack(p)
-	return p
+	// Take the boxes and put the unpacked boxes back.
+	p := newPalletPacker(boxCap)
+	p.takeBoxes(boxes)
+	defer p.putBackUnusedBoxes(boxes)
+	// Pack a pallet.
+	pal := &pallet{boxes: make([]box, 0, 16)}
+	p.pack(pal)
+	return pal
 }
 
+// packAllBoxes pulls all boxes from the channel and packs them onto pallets
+// until they are all packed. It returns all of the packed pallets.
 func packAllBoxes(boxes chan box) []*pallet {
-	packer := &palletPacker{
-		boxes:     make([]*box, 0, len(boxes)),
-		usedBoxes: make(map[uint32]bool),
-	}
-	packer.takeBoxes(boxes)
-	pallets := make([]*pallet, 0, len(packer.boxes))
-	for len(packer.usedBoxes) < len(packer.boxes) {
-		p := &pallet{
-			boxes: make([]box, 0, 16),
-		}
-		packer.pack(p)
-		pallets = append(pallets, p)
+	boxCap := len(boxes)
+	// Take all boxes from the channel.
+	p := newPalletPacker(boxCap)
+	p.takeBoxes(boxes)
+	// Pack until all of the boxes are used.
+	pallets := make([]*pallet, 0, boxCap)
+	for len(p.usedBoxes) < boxCap {
+		pal := &pallet{boxes: make([]box, 0, 16)}
+		p.pack(pal)
+		pallets = append(pallets, pal)
 	}
 	return pallets
 }
@@ -140,6 +142,13 @@ var (
 type palletPacker struct {
 	boxes     []*box
 	usedBoxes map[uint32]bool
+}
+
+func newPalletPacker(boxCap int) *palletPacker {
+	return &palletPacker{
+		boxes:     make([]*box, 0, boxCap),
+		usedBoxes: make(map[uint32]bool),
+	}
 }
 
 func (p *palletPacker) takeBoxes(boxes <-chan box) {
@@ -203,7 +212,7 @@ func (p *palletPacker) pack(pal *pallet) {
 
 func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 	w := &warehouse{
-		trucks:        make(chan truck, 200),
+		trucks:        make(chan truck),
 		boxes:         make(chan box, 2000),
 		truckCounter:  newCounter("Trucks"),
 		palletCounter: newCounter("Pallets"),
