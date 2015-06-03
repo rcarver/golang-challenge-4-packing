@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sort"
 )
 
 // A repacker repacks trucks.
@@ -113,7 +114,15 @@ func packOnePallet(boxes chan box) *pallet {
 	defer p.putBackUnusedBoxes(boxes)
 	// Pack a pallet.
 	pal := &pallet{boxes: make([]box, 0, 16)}
+	//fmt.Printf("Packing...\n")
 	p.pack(pal)
+
+	fmt.Printf("Packed %d boxes on pallet\n", len(pal.boxes))
+	for _, b := range pal.boxes {
+		fmt.Printf("  box x%d, y%d, w%d, l%d\n", b.x, b.y, b.w, b.l)
+	}
+	fmt.Printf("%s\n", pal)
+
 	return pal
 }
 
@@ -168,6 +177,23 @@ func (p *palletPacker) putBackUnusedBoxes(boxes chan<- box) {
 	}
 }
 
+type boxesByWidth []*box
+
+func (boxes boxesByWidth) Len() int {
+	return len(boxes)
+}
+func (boxes boxesByWidth) Less(i, j int) bool {
+	return boxes[i].w < boxes[j].w
+}
+func (boxes boxesByWidth) Swap(i, j int) {
+	boxes[i], boxes[j] = boxes[j], boxes[i]
+}
+
+const (
+	palW = uint8(4)
+	palL = uint8(4)
+)
+
 func (p *palletPacker) nextBox() *box {
 	for _, b := range p.boxes {
 		if !p.usedBoxes[b.id] {
@@ -176,8 +202,121 @@ func (p *palletPacker) nextBox() *box {
 	}
 	return nil
 }
+
+func sideways(b *box) {
+	if b.w > b.l {
+		b.w, b.l = b.l, b.w
+	}
+}
+
+func upright(b *box) {
+	if b.w < b.l {
+		b.w, b.l = b.l, b.w
+	}
+}
+
+// shelf models a horizontal plane of boxes. The height of the shelf is
+// determined by the first box. Once a height is set, any additional boxes must
+// fit within that height to be added. Boxes can be rotated to fit.
+//
+// The box coordinate system is very confusing. Here it is:
+//
+//  ! box x0, y0, w1, l1
+//  @ box x1, y0, w1, l3
+//
+//   (x + l)
+//   ^
+//
+// | !       |  > (y + w)
+// | @       |
+// | @       |
+// | @       |
+//
+type shelf struct {
+	// x is constant for shelf.
+	x uint8
+	// y starts at zero and changes with each box.
+	y uint8
+	// w is set by the first box.
+	w uint8
+	// lRemains counts down with each box.
+	lRemains uint8
+}
+
+func newShelf(x, l uint8) *shelf {
+	return &shelf{
+		x:        x,
+		y:        0,
+		lRemains: l,
+	}
+}
+
+func (s *shelf) add(b *box) bool {
+	if s.w == 0 {
+		sideways(b)
+		s.w = b.w
+		s.include(b)
+		return true
+	}
+	upright(b)
+	if b.w <= s.w && b.l <= s.lRemains {
+		s.include(b)
+		return true
+	}
+	sideways(b)
+	if b.w <= s.w && b.l <= s.lRemains {
+		s.include(b)
+		return true
+	}
+	return false
+}
+
+func (s *shelf) include(b *box) {
+	b.x, b.y = s.x, s.y
+	s.x += b.l
+	s.lRemains -= b.l
+}
+
+func (p *palletPacker) packShelf(pal *pallet) {
+	shelf := newShelf(0, palletLength)
+
+	for _, b := range p.boxes {
+		ok := shelf.add(b)
+
+		if ok {
+			pal.boxes = append(pal.boxes, *b)
+		} else {
+			shelf = newShelf(shelf.x+1, palletLength)
+			if shelf.x > palletLength {
+				return
+			}
+		}
+
+	}
+}
+
 func (p *palletPacker) pack(pal *pallet) {
+	p.packShelf(pal)
+	return
+	sort.Sort(boxesByWidth(p.boxes))
+
 	fails := 0
+	x, y := uint8(0), uint8(0)
+	availW, availL := palW, palL
+
+	//   box x0, y0, w1, l1
+	//   box x1, y0, w1, l3
+	//
+	//   (x + l)
+	//   ^
+	//   |
+	//   |
+	//
+	// | !       |  --> (y + w)
+	// | @       |
+	// | @       |
+	// | @       |
+
 	for {
 		ok := false
 		b := p.nextBox()
@@ -187,20 +326,21 @@ func (p *palletPacker) pack(pal *pallet) {
 
 		if len(pal.boxes) == 0 {
 			ok = true
-		}
-		if len(pal.boxes) > 0 && len(pal.boxes) <= 4 {
-			pb := pal.boxes[len(pal.boxes)-1]
-			l := pb.x + pb.l + b.l
-			if l < 4 {
-				b.x = pb.x + pb.l
-				b.y = 0
-				ok = true
+		} else {
+			if b.w <= availW {
+				if x+b.l <= palL {
+					ok = true
+				}
 			}
 		}
 
 		if ok {
+			b.x, b.y = x, y
 			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
+			x += b.l
+			availL -= b.l
+			fails = 0
 		} else {
 			fails++
 			if fails < maxFails {
