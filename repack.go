@@ -119,7 +119,7 @@ func packOnePallet(boxes chan box) *pallet {
 
 	fmt.Printf("Packed %d boxes on pallet\n", len(pal.boxes))
 	for _, b := range pal.boxes {
-		fmt.Printf("  box x%d, y%d, w%d, l%d\n", b.x, b.y, b.w, b.l)
+		fmt.Printf("  box %d: x%d, y%d, l%d, w%d\n", b.id, b.x, b.y, b.l, b.w)
 	}
 	fmt.Printf("%s\n", pal)
 
@@ -233,24 +233,36 @@ func upright(b *box) {
 // | @       |
 //
 type shelf struct {
-	// x is constant for shelf.
+	// x starts at zero and changes with each box.
 	x uint8
-	// y starts at zero and changes with each box.
+	// y is constant for shelf.
 	y uint8
 	// w is set by the first box.
 	w uint8
+	// l is the length of the box.
+	l uint8
 	// lRemains counts down with each box.
 	lRemains uint8
 }
 
-func newShelf(x, l uint8) *shelf {
+// newShelf initializes a new shelf at y position with length.
+func newShelf(y, l uint8) *shelf {
 	return &shelf{
-		x:        x,
-		y:        0,
+		x:        0,
+		y:        y,
+		l:        l,
 		lRemains: l,
 	}
 }
 
+// nextShelf returns a new empty shelf that sits on top of the current.
+func (s *shelf) nextShelf() *shelf {
+	return newShelf(s.y+s.w, s.l)
+}
+
+// add puts a box on the shelf if it fits. The box will be rotated to find the
+// best placement. If a fit is found, the shelf's positions are updated and
+// true is returned. Otherwise false is returned and the shelf is unchanged.
 func (s *shelf) add(b *box) bool {
 	if s.w == 0 {
 		sideways(b)
@@ -282,12 +294,12 @@ func (p *palletPacker) packShelf(pal *pallet) {
 
 	for _, b := range p.boxes {
 		ok := shelf.add(b)
-
 		if ok {
+			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
 		} else {
-			shelf = newShelf(shelf.x+1, palletLength)
-			if shelf.x > palletLength {
+			shelf = newShelf(shelf.y+1, palletLength)
+			if shelf.y >= palletLength {
 				return
 			}
 		}
