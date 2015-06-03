@@ -4,6 +4,11 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"sync"
+)
+
+const (
+	debug = false
 )
 
 // A repacker repacks trucks.
@@ -67,7 +72,9 @@ func (w *warehouse) Unpack(in <-chan *truck) {
 			w.palletCounter.Inc(1)
 			for _, b := range p.boxes {
 				w.boxCounter.Inc(1)
+				boxesMu.Lock()
 				w.boxes <- b
+				boxesMu.Unlock()
 			}
 		}
 	}
@@ -76,9 +83,16 @@ func (w *warehouse) Unpack(in <-chan *truck) {
 // PackTruck re-packs a truck as efficiently as possible.
 func (w *warehouse) PackTruck(t *truck) {
 	w.truckCounter.Dec(1)
+	// Pack up to the truck's pallet capacity.
 	for len(t.pallets) < cap(t.pallets) {
-		fmt.Printf("Packing truck %d pallet %d\n", t.id, len(t.pallets))
+		if debug {
+			fmt.Printf("Packing truck %d pallet %d\n", t.id, len(t.pallets))
+		}
 		p := packOnePallet(w.boxes)
+		// If the pallet comes back empty we're done.
+		if len(p.boxes) == 0 {
+			return
+		}
 		w.palletCounter.Dec(1)
 		w.boxCounter.Dec(len(p.boxes))
 		t.pallets = append(t.pallets, *p)
@@ -98,31 +112,45 @@ func (w *warehouse) PackRemainingBoxes(t *truck) {
 	}
 }
 
+const (
+	maxBoxes = 10
+)
+
+var boxesMu sync.Mutex
+
 // packOnePallet pulls boxes from the channel, packs as many as it can onto one
 // pallet, then returns any unpacked boxes back to the channel. It returns the
 // packed pallet.
 func packOnePallet(boxes chan box) *pallet {
+	boxesMu.Lock()
 	// Take up to the number of boxes in the channel.
 	boxCap, bLen := 0, len(boxes)
+	boxesMu.Unlock()
 	if maxBoxes > bLen {
 		boxCap = bLen
 	} else {
 		boxCap = maxBoxes
 	}
+
 	// Take the boxes and put the unpacked boxes back.
 	p := newPalletPacker(boxCap)
 	p.takeBoxes(boxes)
 	defer p.putBackUnusedBoxes(boxes)
+
 	// Pack a pallet.
 	pal := &pallet{boxes: make([]box, 0, 16)}
-	//fmt.Printf("Packing...\n")
+	if debug {
+		fmt.Printf("Packing...\n")
+	}
 	p.pack(pal)
 
-	fmt.Printf("Packed %d boxes on pallet\n", len(pal.boxes))
-	for _, b := range pal.boxes {
-		fmt.Printf("  box %d: x%d, y%d, l%d, w%d\n", b.id, b.x, b.y, b.l, b.w)
+	if debug {
+		fmt.Printf("Packed %d of %d boxes on pallet\n", len(pal.boxes), boxCap)
+		for _, b := range pal.boxes {
+			fmt.Printf("  box %d: x%d, y%d, l%d, w%d\n", b.id, b.x, b.y, b.l, b.w)
+		}
+		fmt.Printf("%s\n", pal)
 	}
-	fmt.Printf("%s\n", pal)
 
 	return pal
 }
@@ -130,10 +158,14 @@ func packOnePallet(boxes chan box) *pallet {
 // packAllBoxes pulls all boxes from the channel and packs them onto pallets
 // until they are all packed. It returns all of the packed pallets.
 func packAllBoxes(boxes chan box) []*pallet {
+	boxesMu.Lock()
 	boxCap := len(boxes)
+	boxesMu.Unlock()
+
 	// Take all boxes from the channel.
 	p := newPalletPacker(boxCap)
 	p.takeBoxes(boxes)
+
 	// Pack until all of the boxes are used.
 	pallets := make([]*pallet, 0, boxCap)
 	for len(p.usedBoxes) < boxCap {
@@ -143,11 +175,6 @@ func packAllBoxes(boxes chan box) []*pallet {
 	}
 	return pallets
 }
-
-var (
-	maxBoxes = 64
-	maxFails = 64
-)
 
 type palletPacker struct {
 	boxes     []*box
@@ -173,7 +200,9 @@ func (p *palletPacker) takeBoxes(boxes <-chan box) {
 func (p *palletPacker) putBackUnusedBoxes(boxes chan<- box) {
 	for _, b := range p.boxes {
 		if !p.usedBoxes[b.id] {
+			boxesMu.Lock()
 			boxes <- *b
+			boxesMu.Unlock()
 		}
 	}
 }
@@ -303,18 +332,24 @@ func (p *palletPacker) packShelf(pal *pallet) {
 
 	sort.Sort(sortedBoxes(p.boxes))
 
-	fmt.Printf("  Begin packing...\n")
+	if debug {
+		fmt.Printf("  Begin packing...\n")
+	}
 	i := 0
 	for i < len(p.boxes) {
 		b := p.boxes[i]
 		ok := shelf.add(b)
 		if ok {
-			fmt.Printf("  + shelf %v, box %v\n", shelf, b)
+			if debug {
+				fmt.Printf("  + shelf %v, box %v\n", shelf, b)
+			}
 			i++
 			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
 		} else {
-			fmt.Printf("  - shelf %v, box %v\n", shelf, b)
+			if debug {
+				fmt.Printf("  - shelf %v, box %v\n", shelf, b)
+			}
 			wRemains -= shelf.w
 			if wRemains <= 0 {
 				return
@@ -353,6 +388,7 @@ func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 			select {
 			case t := <-w.trucks:
 				if t.id == idLastTruck {
+					fmt.Printf("Packing the last truck...\n")
 					w.PackRemainingBoxes(&t)
 					out <- &t
 					return
