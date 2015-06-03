@@ -1,6 +1,24 @@
 package main
 
-import "testing"
+import (
+	"sort"
+	"testing"
+)
+
+func Test_sortedBoxes(t *testing.T) {
+	a := box{0, 0, 5, 2, 91}
+	b := box{0, 0, 5, 1, 90}
+	c := box{0, 0, 4, 2, 92}
+	d := box{0, 0, 3, 2, 93}
+	gotBoxes := []*box{&c, &a, &d, &b}
+	wantBoxes := []*box{&a, &b, &c, &d}
+	sort.Sort(sortedBoxes(gotBoxes))
+	for i := range make([]struct{}, 4) {
+		if got, want := *gotBoxes[i], *wantBoxes[i]; got != want {
+			t.Errorf("%d got %v, want %v", i, got, want)
+		}
+	}
+}
 
 func TestOrientations(t *testing.T) {
 	tests := []struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sort"
 )
 
 // A repacker repacks trucks.
@@ -177,15 +178,19 @@ func (p *palletPacker) putBackUnusedBoxes(boxes chan<- box) {
 	}
 }
 
-type boxesByWidth []*box
+type sortedBoxes []*box
 
-func (boxes boxesByWidth) Len() int {
+func (boxes sortedBoxes) Len() int {
 	return len(boxes)
 }
-func (boxes boxesByWidth) Less(i, j int) bool {
-	return boxes[i].w < boxes[j].w
+func (boxes sortedBoxes) Less(i, j int) bool {
+	a, b := boxes[i], boxes[j]
+	if a.w == b.w {
+		return a.l > b.l
+	}
+	return a.w > b.w
 }
-func (boxes boxesByWidth) Swap(i, j int) {
+func (boxes sortedBoxes) Swap(i, j int) {
 	boxes[i], boxes[j] = boxes[j], boxes[i]
 }
 
@@ -295,6 +300,8 @@ func (s *shelf) include(b *box) {
 func (p *palletPacker) packShelf(pal *pallet) {
 	shelf := newShelf(0, palletLength)
 	wRemains := uint8(palletWidth)
+
+	sort.Sort(sortedBoxes(p.boxes))
 
 	for _, b := range p.boxes {
 		ok := shelf.add(b)
