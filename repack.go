@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"sort"
 )
 
 // A repacker repacks trucks.
@@ -256,9 +255,12 @@ func newShelf(y, l uint8) *shelf {
 	}
 }
 
-// nextShelf returns a new empty shelf that sits on top of the current.
-func (s *shelf) nextShelf() *shelf {
-	return newShelf(s.y+s.w, s.l)
+// nextShelf returns a new empty shelf that sits on top of the current. A
+// non-zero value for the width sets the size of the shelf.
+func (s *shelf) nextShelf(w uint8) *shelf {
+	ns := newShelf(s.y+s.w, s.l)
+	ns.w = w
+	return ns
 }
 
 // add puts a box on the shelf if it fits. The box will be rotated to find the
@@ -292,6 +294,7 @@ func (s *shelf) include(b *box) {
 
 func (p *palletPacker) packShelf(pal *pallet) {
 	shelf := newShelf(0, palletLength)
+	wRemains := uint8(palletWidth)
 
 	for _, b := range p.boxes {
 		ok := shelf.add(b)
@@ -299,10 +302,11 @@ func (p *palletPacker) packShelf(pal *pallet) {
 			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
 		} else {
-			shelf = shelf.nextShelf()
-			if shelf.y >= palletWidth {
+			wRemains -= shelf.w
+			if wRemains <= 0 {
 				return
 			}
+			shelf = shelf.nextShelf(wRemains)
 		}
 
 	}
@@ -310,57 +314,6 @@ func (p *palletPacker) packShelf(pal *pallet) {
 
 func (p *palletPacker) pack(pal *pallet) {
 	p.packShelf(pal)
-	return
-	sort.Sort(boxesByWidth(p.boxes))
-
-	fails := 0
-	x, y := uint8(0), uint8(0)
-	availW, availL := palW, palL
-
-	//   box x0, y0, w1, l1
-	//   box x1, y0, w1, l3
-	//
-	//   (x + l)
-	//   ^
-	//   |
-	//   |
-	//
-	// | !       |  --> (y + w)
-	// | @       |
-	// | @       |
-	// | @       |
-
-	for {
-		ok := false
-		b := p.nextBox()
-		if b == nil {
-			return
-		}
-
-		if len(pal.boxes) == 0 {
-			ok = true
-		} else {
-			if b.w <= availW {
-				if x+b.l <= palL {
-					ok = true
-				}
-			}
-		}
-
-		if ok {
-			b.x, b.y = x, y
-			p.usedBoxes[b.id] = true
-			pal.boxes = append(pal.boxes, *b)
-			x += b.l
-			availL -= b.l
-			fails = 0
-		} else {
-			fails++
-			if fails < maxFails {
-				return
-			}
-		}
-	}
 }
 
 func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {

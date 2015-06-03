@@ -52,10 +52,23 @@ func Test_shelf_nextShelf(t *testing.T) {
 	if *s != wantNow {
 		t.Errorf("got now: %v, want %v", s, wantNow)
 	}
-	gotNext := s.nextShelf()
-	wantNext := shelf{0, 3, 0, 7, 7}
-	if *gotNext != wantNext {
-		t.Errorf("got next: %v, want %v", gotNext, wantNext)
+	tests := []struct {
+		gotShelf  shelf
+		wantShelf shelf
+	}{
+		{
+			*s.nextShelf(0),
+			shelf{0, 3, 0, 7, 7},
+		},
+		{
+			*s.nextShelf(3),
+			shelf{0, 3, 3, 7, 7},
+		},
+	}
+	for i, test := range tests {
+		if got, want := test.gotShelf, test.wantShelf; got != want {
+			t.Errorf("%d nextShelf got %v, want %v", i, got, want)
+		}
 	}
 }
 
