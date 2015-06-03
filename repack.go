@@ -77,6 +77,7 @@ func (w *warehouse) Unpack(in <-chan *truck) {
 func (w *warehouse) PackTruck(t *truck) {
 	w.truckCounter.Dec(1)
 	for len(t.pallets) < cap(t.pallets) {
+		fmt.Printf("Packing truck %d pallet %d\n", t.id, len(t.pallets))
 		p := packOnePallet(w.boxes)
 		w.palletCounter.Dec(1)
 		w.boxCounter.Dec(len(p.boxes))
@@ -298,8 +299,8 @@ func (p *palletPacker) packShelf(pal *pallet) {
 			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
 		} else {
-			shelf = newShelf(shelf.y+1, palletLength)
-			if shelf.y >= palletLength {
+			shelf = shelf.nextShelf()
+			if shelf.y >= palletWidth {
 				return
 			}
 		}
