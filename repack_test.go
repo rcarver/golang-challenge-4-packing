@@ -2,6 +2,7 @@ package main
 
 import (
 	"sort"
+	"sync"
 	"testing"
 )
 
@@ -169,15 +170,19 @@ func Test_shelf_include(t *testing.T) {
 func Test_packPallet(t *testing.T) {
 	ch := make(chan box, 10)
 	var pal *pallet
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
 		pal = packOnePallet(ch)
 		if err := pal.IsValid(); err != nil {
 			t.Fatalf("Pallet is not packed correctly: %s", err)
 		}
+		wg.Done()
 	}()
 	ch <- box{0, 0, 2, 1, 90}
 	ch <- box{0, 0, 1, 1, 91}
 	ch <- box{0, 0, 1, 3, 92}
 	ch <- box{0, 0, 2, 1, 93}
 	ch <- box{0, 0, 1, 1, 94}
+	wg.Wait()
 }

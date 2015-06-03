@@ -303,19 +303,24 @@ func (p *palletPacker) packShelf(pal *pallet) {
 
 	sort.Sort(sortedBoxes(p.boxes))
 
-	for _, b := range p.boxes {
+	fmt.Printf("  Begin packing...\n")
+	i := 0
+	for i < len(p.boxes) {
+		b := p.boxes[i]
 		ok := shelf.add(b)
 		if ok {
+			fmt.Printf("  + shelf %v, box %v\n", shelf, b)
+			i++
 			p.usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
 		} else {
+			fmt.Printf("  - shelf %v, box %v\n", shelf, b)
 			wRemains -= shelf.w
 			if wRemains <= 0 {
 				return
 			}
 			shelf = shelf.nextShelf(wRemains)
 		}
-
 	}
 }
 
