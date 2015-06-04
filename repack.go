@@ -49,10 +49,59 @@ func (c *counter) String() string {
 // warehouse manages the ins and outs of unpacking and packing.
 type warehouse struct {
 	trucks        chan truck
-	boxes         chan box
+	boxes         []box
+	hasBox        map[uint32]bool
+	boxesMu       sync.Mutex
 	palletCounter *counter
 	truckCounter  *counter
 	boxCounter    *counter
+}
+
+func (w *warehouse) addBox(b box) {
+	w.boxesMu.Lock()
+	w.hasBox[b.id] = true
+	w.boxes = append(w.boxes, b)
+	w.boxesMu.Unlock()
+}
+
+func (w *warehouse) grabSomeBoxes(max int) []box {
+	w.boxesMu.Lock()
+	if l := len(w.boxes); max > l {
+		max = l
+	}
+	out := make([]box, 0, max)
+	for _, b := range w.boxes {
+		if w.hasBox[b.id] {
+			delete(w.hasBox, b.id)
+			out = append(out, b)
+			if len(out) > max {
+				break
+			}
+		}
+	}
+	w.boxesMu.Unlock()
+	return out
+}
+
+func (w *warehouse) grabAllBoxes() []box {
+	w.boxesMu.Lock()
+	out := make([]box, 0, len(w.boxes))
+	for _, b := range w.boxes {
+		if w.hasBox[b.id] {
+			delete(w.hasBox, b.id)
+			out = append(out, b)
+		}
+	}
+	w.boxesMu.Unlock()
+	return out
+}
+
+func (w *warehouse) returnBoxes(boxes []box) {
+	w.boxesMu.Lock()
+	for _, b := range boxes {
+		w.hasBox[b.id] = true
+	}
+	w.boxesMu.Unlock()
 }
 
 // Unpack unloads all boxes from the trucks, and parks all of the trucks to be
@@ -72,9 +121,7 @@ func (w *warehouse) Unpack(in <-chan *truck) {
 			w.palletCounter.Inc(1)
 			for _, b := range p.boxes {
 				w.boxCounter.Inc(1)
-				boxesMu.Lock()
-				w.boxes <- b
-				boxesMu.Unlock()
+				w.addBox(b)
 			}
 		}
 	}
@@ -88,7 +135,7 @@ func (w *warehouse) PackTruck(t *truck) {
 		if debug {
 			fmt.Printf("Packing truck %d pallet %d\n", t.id, len(t.pallets))
 		}
-		p := packOnePallet(w.boxes)
+		p := w.packOnePallet()
 		// If the pallet comes back empty we're done.
 		if len(p.boxes) == 0 {
 			return
@@ -102,9 +149,8 @@ func (w *warehouse) PackTruck(t *truck) {
 // PackRemainingBoxes puts all remaining boxes onto this last truck, with no
 // regard for how many pallets should fit.
 func (w *warehouse) PackRemainingBoxes(t *truck) {
-	close(w.boxes)
 	w.truckCounter.Dec(1)
-	pallets := packAllBoxes(w.boxes)
+	pallets := w.packAllBoxes()
 	for _, p := range pallets {
 		w.palletCounter.Dec(1)
 		w.boxCounter.Dec(len(p.boxes))
@@ -113,39 +159,25 @@ func (w *warehouse) PackRemainingBoxes(t *truck) {
 }
 
 const (
-	maxBoxes = 10
+	maxBoxes = 100
 )
-
-var boxesMu sync.Mutex
 
 // packOnePallet pulls boxes from the channel, packs as many as it can onto one
 // pallet, then returns any unpacked boxes back to the channel. It returns the
 // packed pallet.
-func packOnePallet(boxes chan box) *pallet {
-	boxesMu.Lock()
-	// Take up to the number of boxes in the channel.
-	boxCap, bLen := 0, len(boxes)
-	boxesMu.Unlock()
-	if maxBoxes > bLen {
-		boxCap = bLen
-	} else {
-		boxCap = maxBoxes
-	}
-
-	// Take the boxes and put the unpacked boxes back.
-	p := newPalletPacker(boxCap)
-	p.takeBoxes(boxes)
-	defer p.putBackUnusedBoxes(boxes)
-
-	// Pack a pallet.
-	pal := &pallet{boxes: make([]box, 0, 16)}
+func (w *warehouse) packOnePallet() *pallet {
 	if debug {
 		fmt.Printf("Packing...\n")
 	}
-	p.pack(pal)
+
+	// Pack a pallet.
+	pal := &pallet{boxes: make([]box, 0, 16)}
+	boxes := w.grabSomeBoxes(maxBoxes)
+	unusedBoxes := packWithShelves(pal, boxes)
+	w.returnBoxes(unusedBoxes)
 
 	if debug {
-		fmt.Printf("Packed %d of %d boxes on pallet\n", len(pal.boxes), boxCap)
+		fmt.Printf("Packed %d of %d boxes on pallet\n", len(pal.boxes), len(boxes))
 		for _, b := range pal.boxes {
 			fmt.Printf("  box %d: x%d, y%d, l%d, w%d\n", b.id, b.x, b.y, b.l, b.w)
 		}
@@ -157,57 +189,19 @@ func packOnePallet(boxes chan box) *pallet {
 
 // packAllBoxes pulls all boxes from the channel and packs them onto pallets
 // until they are all packed. It returns all of the packed pallets.
-func packAllBoxes(boxes chan box) []*pallet {
-	boxesMu.Lock()
-	boxCap := len(boxes)
-	boxesMu.Unlock()
-
-	// Take all boxes from the channel.
-	p := newPalletPacker(boxCap)
-	p.takeBoxes(boxes)
-
+func (w *warehouse) packAllBoxes() []*pallet {
 	// Pack until all of the boxes are used.
-	pallets := make([]*pallet, 0, boxCap)
-	for len(p.usedBoxes) < boxCap {
+	boxes := w.grabAllBoxes()
+	pallets := make([]*pallet, 0, len(boxes))
+	for len(boxes) > 0 {
 		pal := &pallet{boxes: make([]box, 0, 16)}
-		p.pack(pal)
+		boxes = packWithShelves(pal, boxes)
 		pallets = append(pallets, pal)
 	}
 	return pallets
 }
 
-type palletPacker struct {
-	boxes     []*box
-	usedBoxes map[uint32]bool
-}
-
-func newPalletPacker(boxCap int) *palletPacker {
-	return &palletPacker{
-		boxes:     make([]*box, 0, boxCap),
-		usedBoxes: make(map[uint32]bool),
-	}
-}
-
-func (p *palletPacker) takeBoxes(boxes <-chan box) {
-	for len(p.boxes) < cap(p.boxes) {
-		select {
-		case b := <-boxes:
-			b.x, b.y = 0, 0
-			p.boxes = append(p.boxes, &b)
-		}
-	}
-}
-func (p *palletPacker) putBackUnusedBoxes(boxes chan<- box) {
-	for _, b := range p.boxes {
-		if !p.usedBoxes[b.id] {
-			boxesMu.Lock()
-			boxes <- *b
-			boxesMu.Unlock()
-		}
-	}
-}
-
-type sortedBoxes []*box
+type sortedBoxes []box
 
 func (boxes sortedBoxes) Len() int {
 	return len(boxes)
@@ -223,26 +217,14 @@ func (boxes sortedBoxes) Swap(i, j int) {
 	boxes[i], boxes[j] = boxes[j], boxes[i]
 }
 
-const (
-	palW = uint8(4)
-	palL = uint8(4)
-)
-
-func (p *palletPacker) nextBox() *box {
-	for _, b := range p.boxes {
-		if !p.usedBoxes[b.id] {
-			return b
-		}
-	}
-	return nil
-}
-
+// sideways orients the box sideways.
 func sideways(b *box) {
 	if b.w > b.l {
 		b.w, b.l = b.l, b.w
 	}
 }
 
+// upright orients the box upright.
 func upright(b *box) {
 	if b.w < b.l {
 		b.w, b.l = b.l, b.w
@@ -326,53 +308,59 @@ func (s *shelf) include(b *box) {
 	s.lRemains -= b.l
 }
 
-func (p *palletPacker) packShelf(pal *pallet) {
+// packWithShelves fills a pallet with the shelf algorithm, using the boxes given. It
+// returns the boxes that were not put onto the pallet.
+func packWithShelves(pal *pallet, boxes []box) []box {
 	shelf := newShelf(0, palletLength)
 	wRemains := uint8(palletWidth)
 
-	sort.Sort(sortedBoxes(p.boxes))
+	sort.Sort(sortedBoxes(boxes))
+
+	//for i, b := range boxes {
+	//fmt.Printf("use boxes %d %s\n", i, b)
+	//}
 
 	if debug {
 		fmt.Printf("  Begin packing...\n")
 	}
 	i := 0
-	for i < len(p.boxes) {
-		b := p.boxes[i]
-		ok := shelf.add(b)
+	for i < len(boxes) {
+		b := boxes[i]
+		ok := shelf.add(&b)
 		if ok {
 			if debug {
 				fmt.Printf("  + shelf %v, box %v\n", shelf, b)
 			}
 			i++
-			p.usedBoxes[b.id] = true
-			pal.boxes = append(pal.boxes, *b)
+			pal.boxes = append(pal.boxes, b)
 		} else {
 			if debug {
 				fmt.Printf("  - shelf %v, box %v\n", shelf, b)
 			}
 			wRemains -= shelf.w
 			if wRemains <= 0 {
-				return
+				break
 			}
 			shelf = shelf.nextShelf(wRemains)
 		}
 	}
-}
-
-func (p *palletPacker) pack(pal *pallet) {
-	p.packShelf(pal)
+	return boxes[i:]
 }
 
 func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 	w := &warehouse{
-		trucks:        make(chan truck),
-		boxes:         make(chan box, 2000),
+		trucks:        make(chan truck, 10),
+		boxes:         make([]box, 0, 2000),
+		hasBox:        make(map[uint32]bool),
 		truckCounter:  newCounter("Trucks"),
 		palletCounter: newCounter("Pallets"),
 		boxCounter:    newCounter("Boxes"),
 	}
 	go w.Unpack(in)
 	go func() {
+		for len(w.trucks) < cap(w.trucks) {
+			// wait
+		}
 		// The repacker must close channel out after it detects that
 		// channel in is closed so that the driver program will finish
 		// and print the stats.
@@ -388,7 +376,7 @@ func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
 			select {
 			case t := <-w.trucks:
 				if t.id == idLastTruck {
-					fmt.Printf("Packing the last truck...\n")
+					log.Printf("Packing the last truck...\n")
 					w.PackRemainingBoxes(&t)
 					out <- &t
 					return
