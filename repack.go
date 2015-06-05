@@ -211,7 +211,7 @@ func (boxes sortedBoxes) Len() int {
 func (boxes sortedBoxes) Less(i, j int) bool {
 	a, b := boxes[i], boxes[j]
 	if a.w == b.w {
-		return a.l > b.l
+		return a.l < b.l
 	}
 	return a.w > b.w
 }

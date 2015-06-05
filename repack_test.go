@@ -2,20 +2,19 @@ package main
 
 import (
 	"sort"
-	"sync"
 	"testing"
 )
 
 func Test_sortedBoxes(t *testing.T) {
-	a := box{0, 0, 5, 2, 91}
-	b := box{0, 0, 5, 1, 90}
+	a := box{0, 0, 5, 1, 91}
+	b := box{0, 0, 5, 2, 90}
 	c := box{0, 0, 4, 2, 92}
 	d := box{0, 0, 3, 2, 93}
-	gotBoxes := []*box{&c, &a, &d, &b}
-	wantBoxes := []*box{&a, &b, &c, &d}
+	gotBoxes := []box{c, b, d, a}
+	wantBoxes := []box{a, b, c, d}
 	sort.Sort(sortedBoxes(gotBoxes))
 	for i := range make([]struct{}, 4) {
-		if got, want := *gotBoxes[i], *wantBoxes[i]; got != want {
+		if got, want := gotBoxes[i], wantBoxes[i]; got != want {
 			t.Errorf("%d got %v, want %v", i, got, want)
 		}
 	}
@@ -168,21 +167,15 @@ func Test_shelf_include(t *testing.T) {
 }
 
 func Test_packPallet(t *testing.T) {
-	ch := make(chan box, 10)
-	var pal *pallet
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		pal = packOnePallet(ch)
-		if err := pal.IsValid(); err != nil {
-			t.Fatalf("Pallet is not packed correctly: %s", err)
-		}
-		wg.Done()
-	}()
-	ch <- box{0, 0, 2, 1, 90}
-	ch <- box{0, 0, 1, 1, 91}
-	ch <- box{0, 0, 1, 3, 92}
-	ch <- box{0, 0, 2, 1, 93}
-	ch <- box{0, 0, 1, 1, 94}
-	wg.Wait()
+	boxes := make([]box, 0)
+	w := warehouse{boxes: boxes}
+	boxes = append(boxes, box{0, 0, 2, 1, 90})
+	boxes = append(boxes, box{0, 0, 1, 1, 91})
+	boxes = append(boxes, box{0, 0, 1, 3, 92})
+	boxes = append(boxes, box{0, 0, 2, 1, 93})
+	boxes = append(boxes, box{0, 0, 1, 1, 94})
+	pal := w.packOnePallet()
+	if err := pal.IsValid(); err != nil {
+		t.Fatalf("Pallet is not packed correctly: %s", err)
+	}
 }
