@@ -327,9 +327,11 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 	usedBoxes := make(map[uint32]bool)
 
 	nextBox := func(maxW, maxL uint8) *box {
+		fmt.Printf("   nextBox maxW:%d, maxL:%d\n", maxW, maxL)
 		if maxW > 0 && maxL > 0 {
 			for _, b := range boxes {
 				if b.w <= maxW && b.l <= maxL && !usedBoxes[b.id] {
+					fmt.Printf("   nextBox W+L: %v\n", b)
 					return &b
 				}
 			}
@@ -337,6 +339,7 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 		if maxW > 0 {
 			for _, b := range boxes {
 				if b.w <= maxW && !usedBoxes[b.id] {
+					fmt.Printf("   nextBox W: %v\n", b)
 					return &b
 				}
 			}
@@ -344,15 +347,18 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 		if maxL > 0 {
 			for _, b := range boxes {
 				if b.l <= maxL && !usedBoxes[b.id] {
+					fmt.Printf("   nextBox L: %v\n", b)
 					return &b
 				}
 			}
 		}
 		for _, b := range boxes {
 			if !usedBoxes[b.id] {
+				fmt.Printf("   nextBox %v\n", b)
 				return &b
 			}
 		}
+		fmt.Printf("   nextBox nil")
 		return nil
 	}
 
@@ -368,6 +374,14 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 			}
 			usedBoxes[b.id] = true
 			pal.boxes = append(pal.boxes, *b)
+			if shelf.lRemains <= 0 {
+				fmt.Printf("shelf is full\n")
+				wRemains -= shelf.w
+				if wRemains <= 0 {
+					break
+				}
+				shelf = shelf.nextShelf(wRemains)
+			}
 		} else {
 			if debug {
 				fmt.Printf("  - shelf %v, box %v\n", shelf, b)
