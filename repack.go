@@ -326,10 +326,24 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 
 	usedBoxes := make(map[uint32]bool)
 
-	nextBox := func(maxW uint8) *box {
+	nextBox := func(maxW, maxL uint8) *box {
+		if maxW > 0 && maxL > 0 {
+			for _, b := range boxes {
+				if b.w <= maxW && b.l <= maxL && !usedBoxes[b.id] {
+					return &b
+				}
+			}
+		}
 		if maxW > 0 {
 			for _, b := range boxes {
 				if b.w <= maxW && !usedBoxes[b.id] {
+					return &b
+				}
+			}
+		}
+		if maxL > 0 {
+			for _, b := range boxes {
+				if b.l <= maxL && !usedBoxes[b.id] {
 					return &b
 				}
 			}
@@ -343,7 +357,7 @@ func packWithShelves(pal *pallet, boxes []box) []box {
 	}
 
 	for {
-		b := nextBox(shelf.w)
+		b := nextBox(shelf.w, shelf.lRemains)
 		if b == nil {
 			break
 		}
